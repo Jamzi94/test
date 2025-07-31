@@ -1,0 +1,65 @@
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime as builder
+
+USER root
+
+# Install build dependencies and common tools
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
+        libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+        git build-essential libportaudio2 ffmpeg && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create user and clone ComfyUI
+RUN groupadd -r comfygroup && useradd -r -g comfygroup -m comfyuser
+RUN git clone https://github.com/comfyanonymous/ComfyUI /app
+WORKDIR /app
+RUN chown -R comfyuser:comfygroup /app
+
+# Patch ComfyUI (if necessary, keep this before pip installs)
+RUN sed -i 's/weights_only=True/weights_only=False/g' /app/comfy/utils.py
+
+# Install Python dependencies
+USER root
+# Removed: RUN pip install -r requirements.txt
+# Removed: RUN pip install uv
+RUN pip install \
+  --upgrade pip wheel setuptools \
+  torch==2.5.1+cu124 torchvision==0.20.1+cu124 torchaudio==2.5.1+cu124 \
+  xformers==0.0.28.post3 \
+  pytorch-lightning==2.5.2 \
+  torchmetrics==1.7.4 \
+  torchsde==0.2.6 \
+  triton==3.1.0 \
+  torchelastic==0.2.2 \
+  --extra-index-url https://download.pytorch.org/whl/cu124
+RUN pip install numpy==1.26.4
+RUN pip install comfyui_frontend_package==1.23.4
+
+# Install specific dependencies for custom nodes (Wav2Lip, etc.)
+RUN pip install dlib-bin opencv-python-headless librosa scikit-image basicsr facexlib gfpgan imageio-ffmpeg dill onnxruntime pykalman GitPython omegaconf ultralytics insightface einx toml rich sounddevice
+
+# Ensure correct permissions for site-packages
+RUN chown -R comfyuser:comfygroup /opt/conda/lib/python3.11/site-packages/
+
+# --- Final Stage ---
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+
+# Copy only necessary files from the builder stage
+COPY --from=builder /app /app
+# Removed: COPY --from=builder /opt/conda /opt/conda
+# Removed: COPY --from=builder /usr/bin/git /usr/bin/git
+# Removed: COPY --from=builder /usr/lib/git-core /usr/lib/git-core
+# Removed: COPY --from=builder /usr/share/git /usr/share/git
+
+# Recreate user and set permissions
+RUN groupadd -r comfygroup && useradd -r -g comfygroup -m comfyuser
+# Removed: RUN chown -R comfyuser:comfygroup /app
+RUN mkdir -p /app/user && chown -R comfyuser:comfygroup /app/user
+
+USER comfyuser
+WORKDIR /app
+
+# Copy config.ini (will be handled by deploy.sh)
+# COPY config.ini /app/user/default/ComfyUI-Manager/config.ini
+
+CMD ["python","main.py"]
